@@ -76,14 +76,23 @@ async def run_pycdc_async(
     exe_path: str,
     seq_file_path: str,
     path_for_log: str,
+    *,
+    unit_buf: bool = False,
+    no_banner: bool = False,
     show_all: bool = False,
     show_err_opcode: bool = False,
     show_warn_stack: bool = False,
 ):
     logger = logging.getLogger("shot")
     try:
+        options = []
+        if unit_buf:
+            options.append("--unitbuf")
+        if no_banner:
+            options.append("--no-banner")
         process = await asyncio.create_subprocess_exec(
             exe_path,
+            *options,
             seq_file_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -97,6 +106,21 @@ async def run_pycdc_async(
             logger.warning(f"PYCDC: {line} ({path_for_log})")
 
         for line in stderr_lines:
+            if not unit_buf and line.startswith("Segfault caught"):
+                # retry with --unitbuf
+                await run_pycdc_async(
+                    exe_path,
+                    seq_file_path,
+                    path_for_log,
+                    unit_buf=True,
+                    no_banner=no_banner,
+                    show_all=show_all,
+                    show_err_opcode=show_err_opcode,
+                    show_warn_stack=show_warn_stack,
+                )
+                # do not log anything because it will be logged in the retried call
+                return
+
             if line.startswith(
                 (
                     "Warning: Stack history is empty",
@@ -115,6 +139,7 @@ async def run_pycdc_async(
                     "Unsupported argument",
                     "Unsupported Node type",
                     "Unsupported node type",
+                    "Segfault caught",
                 )
             ):  # annoying wont-fix errors
                 if show_all:
@@ -238,9 +263,10 @@ async def decrypt_process_async(
                     exe_path,
                     seq_file_path,
                     relative_path,
-                    args.show_all,
-                    args.show_err_opcode,
-                    args.show_warn_stack,
+                    no_banner=args.no_banner,
+                    show_all=args.show_all,
+                    show_err_opcode=args.show_err_opcode,
+                    show_warn_stack=args.show_warn_stack,
                 )
 
             except Exception as e:
@@ -370,6 +396,11 @@ def parse_args():
         help="path to the pyarmor-1shot executable to use",
         type=str,
     )
+    parser.add_argument(
+        "--no-banner",
+        help="do not show banner in console and output files",
+        action="store_true",
+    )
     return parser.parse_args()
 
 
@@ -381,7 +412,8 @@ def main():
     )
     logger = logging.getLogger("shot")
 
-    print(rf"""{Fore.CYAN}
+    if not args.no_banner:
+        print(rf"""{Fore.CYAN}
  ____                                                                     ____ 
 ( __ )                                                                   ( __ )
  |  |~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~|  | 
