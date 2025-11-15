@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <type_traits>
 
 /** I want to use functions in pycdas.cpp directly, but not moving them to
  * another file, to sync with upstream in the future easily.
@@ -16,12 +17,42 @@
 
 const char* VERSION = "v0.2.1+";
 
+#ifdef _WIN32
+
+// Windows: Use SEH/UEF; prefer calling only Win32 APIs
+#ifdef __cpp_lib_fstream_native_handle
+static HANDLE g_dc_h  = INVALID_HANDLE_VALUE;
+static HANDLE g_das_h = INVALID_HANDLE_VALUE;
+#endif
+
+static LONG WINAPI av_handler(EXCEPTION_POINTERS* /*ep*/) {
+    const char msg[] = "Access violation caught. Best-effort FlushFileBuffers.\n";
+    DWORD wrote = 0;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, sizeof(msg) - 1, &wrote, nullptr);
+#ifdef __cpp_lib_fstream_native_handle
+    if (g_das_h != INVALID_HANDLE_VALUE) FlushFileBuffers(g_das_h);
+    if (g_dc_h  != INVALID_HANDLE_VALUE) FlushFileBuffers(g_dc_h);
+#endif
+    TerminateProcess(GetCurrentProcess(), 0xC0000005);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+struct SehInstall {
+    SehInstall() {
+        // Suppress WER popups; let the UEF handle it directly
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+        SetUnhandledExceptionFilter(av_handler);
+    }
+} seh_install_guard;
+
+#else  // !_WIN32
+
 #ifdef __cpp_lib_fstream_native_handle
 static int g_dc_fd = -1;
 static int g_das_fd = -1;
 
 static void segv_handler(int sig) {
-    const char msg[] = "Segfault caught. Best-effort fsync.\n";
+    const char msg[] = "Access violation caught. Best-effort fsync.\n";
     // Only use async-signal-safe functions
     write(STDERR_FILENO, msg, sizeof(msg)-1);
     if (g_das_fd != -1) fsync(g_das_fd);
@@ -30,7 +61,7 @@ static void segv_handler(int sig) {
 }
 #else
 static void segv_handler(int sig) {
-    const char msg[] = "Segfault caught.\n";
+    const char msg[] = "Access violation caught.\n";
     write(STDERR_FILENO, msg, sizeof(msg)-1);
     _Exit(128 + sig);
 }
@@ -45,6 +76,8 @@ struct SegvInstall {
         sigaction(SIGSEGV, &sa, nullptr);
     }
 } segv_install_guard;
+
+#endif // _WIN32
 
 int main(int argc, char* argv[])
 {
@@ -117,8 +150,31 @@ int main(int argc, char* argv[])
     }
 
 #ifdef __cpp_lib_fstream_native_handle
+#ifndef _WIN32
     g_dc_fd  = dc_out_file.native_handle();
     g_das_fd = das_out_file.native_handle();
+#else
+    // Extract underlying handles to flush on exceptions
+    // MSVC's native_handle is typically a HANDLE; MinGW may return a fd, requiring conversion via _get_osfhandle
+    auto dc_nh  = dc_out_file.native_handle();
+    auto das_nh = das_out_file.native_handle();
+    using native_handle_t = decltype(dc_nh);
+    if constexpr (std::is_same_v<native_handle_t, HANDLE>) {
+        g_dc_h  = dc_nh;
+        g_das_h = das_nh;
+    } else if constexpr (std::is_integral_v<native_handle_t>) {
+        intptr_t dc_handle = _get_osfhandle(dc_nh);
+        if (dc_handle != -1 && dc_handle != reinterpret_cast<intptr_t>(INVALID_HANDLE_VALUE)) {
+            g_dc_h = reinterpret_cast<HANDLE>(dc_handle);
+        }
+        intptr_t das_handle = _get_osfhandle(das_nh);
+        if (das_handle != -1 && das_handle != reinterpret_cast<intptr_t>(INVALID_HANDLE_VALUE)) {
+            g_das_h = reinterpret_cast<HANDLE>(das_handle);
+        }
+    } else {
+        // ignore, keep as INVALID_HANDLE_VALUE
+    }
+#endif
 #endif
 
     PycModule mod;

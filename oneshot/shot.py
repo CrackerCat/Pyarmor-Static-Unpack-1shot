@@ -106,7 +106,7 @@ async def run_pycdc_async(
             logger.warning(f"PYCDC: {line} ({path_for_log})")
 
         for line in stderr_lines:
-            if not unit_buf and line.startswith("Segfault caught"):
+            if not unit_buf and line.startswith("Access violation caught"):
                 # retry with --unitbuf
                 await run_pycdc_async(
                     exe_path,
@@ -139,7 +139,7 @@ async def run_pycdc_async(
                     "Unsupported argument",
                     "Unsupported Node type",
                     "Unsupported node type",
-                    "Segfault caught",
+                    "Access violation caught",
                 )
             ):  # annoying wont-fix errors
                 if show_all:
