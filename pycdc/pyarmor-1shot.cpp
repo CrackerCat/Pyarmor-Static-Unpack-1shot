@@ -4,7 +4,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
 #include <type_traits>
+#endif
 
 /** I want to use functions in pycdas.cpp directly, but not moving them to
  * another file, to sync with upstream in the future easily.
